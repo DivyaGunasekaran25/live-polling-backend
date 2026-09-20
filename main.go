@@ -7,15 +7,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
-	"golang.org/x/crypto/bcrypt"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type User struct {
@@ -72,7 +73,10 @@ func authMiddleware() gin.HandlerFunc {
 
 		token := parts[1]
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(
+			context.Background(),
+			10*time.Second,
+		)
 		defer cancel()
 
 		var user User
@@ -97,11 +101,29 @@ func authMiddleware() gin.HandlerFunc {
 }
 
 func main() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+
+	// =========================================================
+	// MONGODB
+	// =========================================================
+
+	mongoURI := os.Getenv("MONGODB_URI")
+
+	// Keep local development working.
+	if mongoURI == "" {
+		mongoURI = "mongodb://localhost:27017"
+		fmt.Println("MONGODB_URI not set. Using local MongoDB.")
+	} else {
+		fmt.Println("Using MongoDB URI from environment.")
+	}
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		10*time.Second,
+	)
 	defer cancel()
 
 	client, err := mongo.Connect(
-		options.Client().ApplyURI("mongodb://localhost:27017"),
+		options.Client().ApplyURI(mongoURI),
 	)
 
 	if err != nil {
@@ -111,7 +133,10 @@ func main() {
 	err = client.Ping(ctx, nil)
 
 	if err != nil {
-		panic(err)
+		panic(fmt.Sprintf(
+			"MongoDB connection failed: %v",
+			err,
+		))
 	}
 
 	fmt.Println("MongoDB connected successfully!")
@@ -121,15 +146,37 @@ func main() {
 	collection = database.Collection("polls")
 	usersCollection = database.Collection("users")
 
-	redisClient = redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-	})
+	// =========================================================
+	// REDIS
+	// =========================================================
+
+	redisURL := os.Getenv("REDIS_URL")
+
+	if redisURL == "" {
+		fmt.Println("REDIS_URL not set. Using local Redis.")
+
+		redisClient = redis.NewClient(&redis.Options{
+			Addr: "localhost:6379",
+		})
+	} else {
+		fmt.Println("Using Redis URL from environment.")
+
+		redisOptions, err := redis.ParseURL(redisURL)
+
+		if err != nil {
+			panic(fmt.Sprintf(
+				"Invalid REDIS_URL: %v",
+				err,
+			))
+		}
+
+		redisClient = redis.NewClient(redisOptions)
+	}
 
 	redisCtx, redisCancel := context.WithTimeout(
 		context.Background(),
 		5*time.Second,
 	)
-
 	defer redisCancel()
 
 	err = redisClient.Ping(redisCtx).Err()
@@ -143,17 +190,37 @@ func main() {
 
 	fmt.Println("Redis connected successfully!")
 
+	// =========================================================
+	// GIN
+	// =========================================================
+
 	r := gin.Default()
 
+	// =========================================================
 	// CORS
+	// =========================================================
+
+	frontendURL := os.Getenv("FRONTEND_URL")
+
 	r.Use(func(c *gin.Context) {
 
 		origin := c.GetHeader("Origin")
 
+		allowed := false
+
+		// Local development
 		if origin == "http://localhost:5173" ||
 			origin == "http://localhost:5174" ||
 			origin == "http://localhost:5175" {
+			allowed = true
+		}
 
+		// Deployed frontend
+		if frontendURL != "" && origin == frontendURL {
+			allowed = true
+		}
+
+		if allowed {
 			c.Writer.Header().Set(
 				"Access-Control-Allow-Origin",
 				origin,
@@ -183,7 +250,10 @@ func main() {
 		c.Next()
 	})
 
-	// Home
+	// =========================================================
+	// HOME
+	// =========================================================
+
 	r.GET("/", func(c *gin.Context) {
 
 		c.JSON(http.StatusOK, gin.H{
@@ -192,7 +262,10 @@ func main() {
 
 	})
 
+	// =========================================================
 	// SIGNUP
+	// =========================================================
+
 	r.POST("/auth/signup", func(c *gin.Context) {
 
 		var request struct {
@@ -308,7 +381,10 @@ func main() {
 
 	})
 
+	// =========================================================
 	// LOGIN
+	// =========================================================
+
 	r.POST("/auth/login", func(c *gin.Context) {
 
 		var request struct {
@@ -401,11 +477,12 @@ func main() {
 			"token":   token,
 			"email":   user.Email,
 		})
-
 	})
 
+	// =========================================================
 	// CREATE POLL
-	// Login required
+	// =========================================================
+
 	r.POST(
 		"/polls",
 		authMiddleware(),
@@ -488,7 +565,10 @@ func main() {
 		},
 	)
 
+	// =========================================================
 	// GET ALL POLLS
+	// =========================================================
+
 	r.GET("/polls", func(c *gin.Context) {
 
 		ctx, cancel := context.WithTimeout(
@@ -531,7 +611,10 @@ func main() {
 
 	})
 
+	// =========================================================
 	// GET ONE POLL
+	// =========================================================
+
 	r.GET("/polls/:id", func(c *gin.Context) {
 
 		id, err := bson.ObjectIDFromHex(
@@ -574,7 +657,10 @@ func main() {
 
 	})
 
+	// =========================================================
 	// VOTE
+	// =========================================================
+
 	r.POST("/polls/:id/vote", func(c *gin.Context) {
 
 		id, err := bson.ObjectIDFromHex(
@@ -667,6 +753,10 @@ func main() {
 			return
 		}
 
+		// =====================================================
+		// PUBLISH LIVE UPDATE THROUGH REDIS
+		// =====================================================
+
 		eventData := gin.H{
 			"pollId": id.Hex(),
 			"votes":  poll.Votes,
@@ -685,6 +775,7 @@ func main() {
 			).Err()
 
 			if err != nil {
+
 				fmt.Println(
 					"Redis publish error:",
 					err,
@@ -699,7 +790,10 @@ func main() {
 
 	})
 
-	// LIVE REDIS EVENTS
+	// =========================================================
+	// LIVE REDIS EVENTS / SERVER-SENT EVENTS
+	// =========================================================
+
 	r.GET("/polls/:id/events", func(c *gin.Context) {
 
 		id := c.Param("id")
@@ -766,14 +860,25 @@ func main() {
 
 			c.Writer.Flush()
 		}
-
 	})
 
+	// =========================================================
+	// SERVER PORT
+	// =========================================================
+
+	port := os.Getenv("PORT")
+
+	// Render provides PORT automatically.
+	// Local development uses 8081.
+	if port == "" {
+		port = "8081"
+	}
+
 	fmt.Println(
-		"Starting Live Polling backend on port 8081...",
+		"Starting Live Polling backend on port " + port + "...",
 	)
 
-	if err := r.Run(":8081"); err != nil {
+	if err := r.Run(":" + port); err != nil {
 
 		fmt.Println(
 			"Server error:",
@@ -781,5 +886,4 @@ func main() {
 		)
 
 	}
-
 }
