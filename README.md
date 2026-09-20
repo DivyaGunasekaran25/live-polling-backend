@@ -52,3 +52,9 @@ The backend provides REST APIs for authentication, poll creation, voting, and re
                                     │
                                     ▼
                               SSE Clients
+## Related Repository
+
+### Frontend
+The frontend application is available here:
+
+[Live Polling Frontend](https://github.com/DivyaGunasekaran25/live-polling-frontend)
