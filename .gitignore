@@ -1,0 +1,27 @@
+# Environment / secrets
+.env
+.env.*
+
+# Go build files
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test and coverage files
+*.test
+coverage.out
+coverage.html
+
+# IDE files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
